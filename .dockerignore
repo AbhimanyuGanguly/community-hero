@@ -1,0 +1,8 @@
+node_modules
+npm-debug.log
+.env
+.git
+.gitignore
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
