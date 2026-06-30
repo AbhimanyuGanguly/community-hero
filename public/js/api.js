@@ -4,9 +4,9 @@
 
 // Dynamically determine the backend API URL
 // If running on localhost, use relative paths to the local Node server.
-// If running on Firebase Hosting (production), route to the Glitch backend.
+// If running on Firebase Hosting (production), route to the Render backend.
 const IS_LOCAL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const API_BASE_URL = IS_LOCAL ? '/api' : 'https://community-hero-backend.glitch.me/api';
+const API_BASE_URL = IS_LOCAL ? '/api' : 'https://community-hero-backend.onrender.com/api';
 
 const API = {
   baseUrl: API_BASE_URL,
