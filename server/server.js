@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config({ path: require('path').join(__dirname, '../.env'), override: true });
 
 const express = require('express');
 const cors = require('cors');
@@ -50,7 +50,7 @@ app.use((err, req, res, next) => {
 // ============ START SERVER ============
 async function start() {
   // Seed database with demo data
-  seedDatabase();
+  await seedDatabase();
 
   // Initialize Gemini AI
   initGemini();
@@ -62,7 +62,7 @@ async function start() {
     console.log('   ───────────────────────────────────────────');
     console.log(`   🌐 Server:  http://localhost:${PORT}`);
     console.log(`   📁 Static:  /public`);
-    console.log(`   🗄️  Database: /server/data/community_hero.db`);
+    console.log(`   🗄️  Database: PostgreSQL`);
     console.log('🦸 ═══════════════════════════════════════════');
     console.log('');
   });

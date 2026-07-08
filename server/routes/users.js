@@ -5,9 +5,9 @@ const { optionalAuth } = require('../middleware/auth');
 const router = express.Router();
 
 // GET /api/users/leaderboard
-router.get('/leaderboard', (req, res) => {
+router.get('/leaderboard', async (req, res) => {
   try {
-    const users = db.prepare(`
+    const usersRes = await db.query(`
       SELECT
         u.id, u.name, u.points, u.created_at,
         (SELECT COUNT(*) FROM issues WHERE reported_by = u.id) as issues_reported,
@@ -16,15 +16,25 @@ router.get('/leaderboard', (req, res) => {
       FROM users u
       ORDER BY u.points DESC
       LIMIT 50
-    `).all();
+    `);
+
+    const users = usersRes.rows;
 
     // Attach badges for each user
-    const getBadges = db.prepare('SELECT badge_type, earned_at FROM badges WHERE user_id = ?');
-    const result = users.map((user, index) => ({
-      ...user,
-      rank: index + 1,
-      badges: getBadges.all(user.id)
-    }));
+    const result = [];
+    for (let i = 0; i < users.length; i++) {
+      const user = users[i];
+      const badgesRes = await db.query('SELECT badge_type, earned_at FROM badges WHERE user_id = $1', [user.id]);
+      
+      result.push({
+        ...user,
+        issues_reported: parseInt(user.issues_reported || 0),
+        issues_resolved: parseInt(user.issues_resolved || 0),
+        verifications_count: parseInt(user.verifications_count || 0),
+        rank: i + 1,
+        badges: badgesRes.rows
+      });
+    }
 
     res.json(result);
   } catch (err) {
@@ -34,43 +44,52 @@ router.get('/leaderboard', (req, res) => {
 });
 
 // GET /api/users/:id/stats
-router.get('/:id/stats', (req, res) => {
+router.get('/:id/stats', async (req, res) => {
   try {
-    const user = db.prepare(
-      'SELECT id, name, points, created_at FROM users WHERE id = ?'
-    ).get(req.params.id);
+    const userRes = await db.query(
+      'SELECT id, name, points, created_at FROM users WHERE id = $1',
+      [req.params.id]
+    );
+    const user = userRes.rows[0];
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const stats = db.prepare(`
+    const statsRes = await db.query(`
       SELECT
         COUNT(*) as total_reported,
         SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) as total_resolved,
         SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as total_in_progress
-      FROM issues WHERE reported_by = ?
-    `).get(req.params.id);
+      FROM issues WHERE reported_by = $1
+    `, [req.params.id]);
 
-    const verifications = db.prepare(
-      'SELECT COUNT(*) as count FROM verifications WHERE user_id = ?'
-    ).get(req.params.id);
+    const verificationsRes = await db.query(
+      'SELECT COUNT(*) as count FROM verifications WHERE user_id = $1',
+      [req.params.id]
+    );
 
-    const badges = db.prepare(
-      'SELECT badge_type, earned_at FROM badges WHERE user_id = ?'
-    ).all(req.params.id);
+    const badgesRes = await db.query(
+      'SELECT badge_type, earned_at FROM badges WHERE user_id = $1',
+      [req.params.id]
+    );
 
     // Rank
-    const rank = db.prepare(
-      'SELECT COUNT(*) + 1 as rank FROM users WHERE points > (SELECT points FROM users WHERE id = ?)'
-    ).get(req.params.id);
+    const rankRes = await db.query(
+      'SELECT COUNT(*) + 1 as rank FROM users WHERE points > (SELECT points FROM users WHERE id = $1)',
+      [req.params.id]
+    );
+
+    const stats = statsRes.rows[0];
 
     res.json({
       ...user,
-      ...stats,
-      verifications: verifications.count,
-      badges,
-      rank: rank.rank
+      total_reported: parseInt(stats.total_reported || 0),
+      total_resolved: parseInt(stats.total_resolved || 0),
+      total_in_progress: parseInt(stats.total_in_progress || 0),
+      verifications: parseInt(verificationsRes.rows[0].count || 0),
+      badges: badgesRes.rows,
+      rank: parseInt(rankRes.rows[0].rank || 1)
     });
   } catch (err) {
     console.error('User stats error:', err);

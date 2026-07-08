@@ -7,7 +7,7 @@ const { generateToken, requireAuth } = require('../middleware/auth');
 const router = express.Router();
 
 // POST /api/auth/signup
-router.post('/signup', (req, res) => {
+router.post('/signup', async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
@@ -20,21 +20,24 @@ router.post('/signup', (req, res) => {
     }
 
     // Check if email already exists
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
-    if (existing) {
+    const existingRes = await db.query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existingRes.rows.length > 0) {
       return res.status(409).json({ error: 'An account with this email already exists' });
     }
 
     const id = uuidv4();
     const passwordHash = bcrypt.hashSync(password, 10);
 
-    db.prepare(
-      'INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)'
-    ).run(id, name.trim(), email.toLowerCase().trim(), passwordHash);
+    await db.query(
+      'INSERT INTO users (id, name, email, password_hash) VALUES ($1, $2, $3, $4)',
+      [id, name.trim(), email.toLowerCase().trim(), passwordHash]
+    );
 
-    const user = db.prepare(
-      'SELECT id, name, email, points, created_at FROM users WHERE id = ?'
-    ).get(id);
+    const userRes = await db.query(
+      'SELECT id, name, email, points, created_at FROM users WHERE id = $1',
+      [id]
+    );
+    const user = userRes.rows[0];
 
     const token = generateToken(user);
 
@@ -46,7 +49,7 @@ router.post('/signup', (req, res) => {
 });
 
 // POST /api/auth/login
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -54,9 +57,11 @@ router.post('/login', (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const user = db.prepare(
-      'SELECT * FROM users WHERE email = ?'
-    ).get(email.toLowerCase().trim());
+    const userRes = await db.query(
+      'SELECT * FROM users WHERE email = $1',
+      [email.toLowerCase().trim()]
+    );
+    const user = userRes.rows[0];
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
@@ -78,39 +83,50 @@ router.post('/login', (req, res) => {
 });
 
 // GET /api/auth/me
-router.get('/me', requireAuth, (req, res) => {
+router.get('/me', requireAuth, async (req, res) => {
   try {
-    const user = db.prepare(
-      'SELECT id, name, email, points, created_at FROM users WHERE id = ?'
-    ).get(req.user.id);
+    const userRes = await db.query(
+      'SELECT id, name, email, points, created_at FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = userRes.rows[0];
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
     // Get badges
-    const badges = db.prepare(
-      'SELECT badge_type, earned_at FROM badges WHERE user_id = ?'
-    ).all(req.user.id);
+    const badgesRes = await db.query(
+      'SELECT badge_type, earned_at FROM badges WHERE user_id = $1',
+      [req.user.id]
+    );
 
     // Get issue counts
-    const stats = db.prepare(`
+    const statsRes = await db.query(`
       SELECT
         COUNT(*) as total_reported,
         SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) as total_resolved
-      FROM issues WHERE reported_by = ?
-    `).get(req.user.id);
+      FROM issues WHERE reported_by = $1
+    `, [req.user.id]);
+    
+    let stats = statsRes.rows[0];
+    // Ensure numbers are properly parsed since Postgres might return BigInts for COUNT
+    stats = {
+      total_reported: parseInt(stats.total_reported || 0),
+      total_resolved: parseInt(stats.total_resolved || 0)
+    };
 
-    const verificationCount = db.prepare(
-      'SELECT COUNT(*) as count FROM verifications WHERE user_id = ?'
-    ).get(req.user.id);
+    const verificationCountRes = await db.query(
+      'SELECT COUNT(*) as count FROM verifications WHERE user_id = $1',
+      [req.user.id]
+    );
 
     res.json({
       ...user,
-      badges,
+      badges: badgesRes.rows,
       stats: {
         ...stats,
-        total_verifications: verificationCount.count
+        total_verifications: parseInt(verificationCountRes.rows[0].count || 0)
       }
     });
   } catch (err) {

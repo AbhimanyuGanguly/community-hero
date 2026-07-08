@@ -1,125 +1,105 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
-const DB_PATH = path.join(__dirname, 'data', 'community_hero.db');
-
-// Ensure data directory exists
-const fs = require('fs');
-const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
-const db = new Database(DB_PATH);
-
-// Enable WAL mode for better performance
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
-
-// ============ CREATE TABLES ============
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    points INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS issues (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    category TEXT NOT NULL,
-    severity TEXT DEFAULT 'medium',
-    status TEXT DEFAULT 'reported',
-    lat REAL NOT NULL,
-    lng REAL NOT NULL,
-    address TEXT,
-    image_url TEXT,
-    reported_by TEXT NOT NULL,
-    ai_category TEXT,
-    ai_confidence REAL,
-    upvotes INTEGER DEFAULT 0,
-    verifications INTEGER DEFAULT 0,
-    gov_filed INTEGER DEFAULT 0,
-    gov_authority TEXT,
-    gov_complaint_id TEXT,
-    gov_filed_at TEXT,
-    gov_filed_by TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now')),
-    resolved_at TEXT,
-    FOREIGN KEY (reported_by) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS comments (
-    id TEXT PRIMARY KEY,
-    issue_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    text TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (issue_id) REFERENCES issues(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS verifications (
-    id TEXT PRIMARY KEY,
-    issue_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
-    UNIQUE(issue_id, user_id),
-    FOREIGN KEY (issue_id) REFERENCES issues(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS user_upvotes (
-    issue_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (issue_id, user_id),
-    FOREIGN KEY (issue_id) REFERENCES issues(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS badges (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    badge_type TEXT NOT NULL,
-    earned_at TEXT DEFAULT (datetime('now')),
-    UNIQUE(user_id, badge_type),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-  );
-`);
-
-// Run migrations for existing DB
-const alterStatements = [
-  'ALTER TABLE issues ADD COLUMN gov_filed INTEGER DEFAULT 0',
-  'ALTER TABLE issues ADD COLUMN gov_authority TEXT',
-  'ALTER TABLE issues ADD COLUMN gov_complaint_id TEXT',
-  'ALTER TABLE issues ADD COLUMN gov_filed_at TEXT',
-  'ALTER TABLE issues ADD COLUMN gov_filed_by TEXT'
-];
-for (const stmt of alterStatements) {
-  try {
-    db.exec(stmt);
-  } catch (err) {
-    // Ignore error if column already exists
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : {
+    rejectUnauthorized: false
   }
+});
+
+// For easier refactoring, we create an async wrapper that exposes query()
+const db = {
+  query: async (text, params) => {
+    return pool.query(text, params);
+  }
+};
+
+async function initSchema() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      points INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS issues (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT NOT NULL,
+      severity TEXT DEFAULT 'medium',
+      status TEXT DEFAULT 'reported',
+      lat REAL NOT NULL,
+      lng REAL NOT NULL,
+      address TEXT,
+      image_url TEXT,
+      reported_by TEXT NOT NULL REFERENCES users(id),
+      ai_category TEXT,
+      ai_confidence REAL,
+      upvotes INTEGER DEFAULT 0,
+      verifications INTEGER DEFAULT 0,
+      gov_filed INTEGER DEFAULT 0,
+      gov_authority TEXT,
+      gov_complaint_id TEXT,
+      gov_filed_at TIMESTAMP,
+      gov_filed_by TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      resolved_at TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS comments (
+      id TEXT PRIMARY KEY,
+      issue_id TEXT NOT NULL REFERENCES issues(id),
+      user_id TEXT NOT NULL REFERENCES users(id),
+      text TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS verifications (
+      id TEXT PRIMARY KEY,
+      issue_id TEXT NOT NULL REFERENCES issues(id),
+      user_id TEXT NOT NULL REFERENCES users(id),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(issue_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS user_upvotes (
+      issue_id TEXT NOT NULL REFERENCES issues(id),
+      user_id TEXT NOT NULL REFERENCES users(id),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (issue_id, user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS badges (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      badge_type TEXT NOT NULL,
+      earned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, badge_type)
+    );
+  `);
 }
 
+async function seedDatabase() {
+  // If no DATABASE_URL is provided, we can't connect, so skip gracefully
+  if (!process.env.DATABASE_URL) {
+    console.warn('⚠️ No DATABASE_URL provided. Skipping database initialization.');
+    return;
+  }
 
-// ============ SEED DATA ============
-function seedDatabase() {
-  const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
-  if (userCount > 0) return; // Already seeded
+  await initSchema();
+
+  const userCountRes = await db.query('SELECT COUNT(*) as count FROM users');
+  if (parseInt(userCountRes.rows[0].count) > 0) return; // Already seeded
 
   console.log('🌱 Seeding database with demo data...');
 
-  // Create demo users
   const users = [
     { id: uuidv4(), name: 'Arjun Sharma', email: 'arjun@demo.com', password: 'demo123', points: 185 },
     { id: uuidv4(), name: 'Priya Patel', email: 'priya@demo.com', password: 'demo123', points: 240 },
@@ -131,13 +111,12 @@ function seedDatabase() {
     { id: uuidv4(), name: 'Divya Nair', email: 'divya@demo.com', password: 'demo123', points: 275 },
   ];
 
-  const insertUser = db.prepare(
-    'INSERT INTO users (id, name, email, password_hash, points) VALUES (?, ?, ?, ?, ?)'
-  );
-
   for (const u of users) {
     const hash = bcrypt.hashSync(u.password, 10);
-    insertUser.run(u.id, u.name, u.email, hash, u.points);
+    await db.query(
+      'INSERT INTO users (id, name, email, password_hash, points) VALUES ($1, $2, $3, $4, $5)',
+      [u.id, u.name, u.email, hash, u.points]
+    );
   }
 
   // Delhi NCR locations for realistic seed data
@@ -378,67 +357,44 @@ function seedDatabase() {
     }
   ];
 
-  const insertIssue = db.prepare(`
-    INSERT INTO issues (id, title, description, category, severity, status, lat, lng, address, reported_by, upvotes, verifications, created_at, updated_at, resolved_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), datetime('now', ?), ?)
-  `);
-
-  const insertTransaction = db.transaction(() => {
+  await pool.query('BEGIN');
+  try {
     for (const issue of delhiIssues) {
       const reporterId = users[Math.floor(Math.random() * users.length)].id;
-      const daysOffset = `-${issue.daysAgo} days`;
       const resolvedAt = issue.status === 'resolved' ? new Date().toISOString() : null;
 
-      insertIssue.run(
-        uuidv4(),
-        issue.title,
-        issue.description,
-        issue.category,
-        issue.severity,
-        issue.status,
-        issue.lat,
-        issue.lng,
-        issue.address,
-        reporterId,
-        issue.upvotes,
-        issue.verifications,
-        daysOffset,
-        daysOffset,
-        resolvedAt
-      );
+      await db.query(`
+        INSERT INTO issues (id, title, description, category, severity, status, lat, lng, address, reported_by, upvotes, verifications, created_at, updated_at, resolved_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW() - INTERVAL '${issue.daysAgo} days', NOW() - INTERVAL '${issue.daysAgo} days', $13)
+      `, [
+        uuidv4(), issue.title, issue.description, issue.category, issue.severity, issue.status, issue.lat, issue.lng, issue.address, reporterId, issue.upvotes, issue.verifications, resolvedAt
+      ]);
     }
-  });
-
-  insertTransaction();
+    await pool.query('COMMIT');
+  } catch (err) {
+    await pool.query('ROLLBACK');
+    console.error('Failed to seed issues:', err);
+  }
 
   // Add some badges to top users
-  const insertBadge = db.prepare(
-    'INSERT OR IGNORE INTO badges (id, user_id, badge_type) VALUES (?, ?, ?)'
-  );
+  const addBadge = async (userId, type) => {
+    await db.query('INSERT INTO badges (id, user_id, badge_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [uuidv4(), userId, type]);
+  };
 
-  // Sneha (top scorer) gets multiple badges
-  insertBadge.run(uuidv4(), users[3].id, 'first_responder');
-  insertBadge.run(uuidv4(), users[3].id, 'community_star');
-  insertBadge.run(uuidv4(), users[3].id, 'problem_solver');
+  await addBadge(users[3].id, 'first_responder');
+  await addBadge(users[3].id, 'community_star');
+  await addBadge(users[3].id, 'problem_solver');
+  await addBadge(users[7].id, 'first_responder');
+  await addBadge(users[7].id, 'eagle_eye');
+  await addBadge(users[1].id, 'first_responder');
+  await addBadge(users[1].id, 'community_star');
+  await addBadge(users[5].id, 'first_responder');
+  await addBadge(users[5].id, 'eagle_eye');
+  await addBadge(users[0].id, 'first_responder');
+  await addBadge(users[2].id, 'first_responder');
+  await addBadge(users[4].id, 'first_responder');
 
-  // Divya
-  insertBadge.run(uuidv4(), users[7].id, 'first_responder');
-  insertBadge.run(uuidv4(), users[7].id, 'eagle_eye');
-
-  // Priya
-  insertBadge.run(uuidv4(), users[1].id, 'first_responder');
-  insertBadge.run(uuidv4(), users[1].id, 'community_star');
-
-  // Ananya
-  insertBadge.run(uuidv4(), users[5].id, 'first_responder');
-  insertBadge.run(uuidv4(), users[5].id, 'eagle_eye');
-
-  // Others get first_responder
-  insertBadge.run(uuidv4(), users[0].id, 'first_responder');
-  insertBadge.run(uuidv4(), users[2].id, 'first_responder');
-  insertBadge.run(uuidv4(), users[4].id, 'first_responder');
-
-  console.log(`✅ Seeded ${users.length} users and ${delhiIssues.length} issues`);
+  console.log(`✅ Seeded ${users.length} users and ${delhiIssues.length} issues into PostgreSQL`);
 }
 
-module.exports = { db, seedDatabase };
+module.exports = { db, pool, seedDatabase };
