@@ -393,29 +393,34 @@ async function seedDatabase() {
     });
   }
 
-  // Add some badges to top users
+  // Add some badges to top users if users exist
   const addBadge = async (userId, type) => {
     try {
-      await Badge.create({ id: uuidv4(), user_id: userId, badge_type: type });
+      if (userId) {
+        await Badge.create({ id: uuidv4(), user_id: userId, badge_type: type });
+      }
     } catch (e) {
       // Ignore duplicates
     }
   };
 
-  await addBadge(users[3].id, 'first_responder');
-  await addBadge(users[3].id, 'community_star');
-  await addBadge(users[3].id, 'problem_solver');
-  await addBadge(users[7].id, 'first_responder');
-  await addBadge(users[7].id, 'eagle_eye');
-  await addBadge(users[1].id, 'first_responder');
-  await addBadge(users[1].id, 'community_star');
-  await addBadge(users[5].id, 'first_responder');
-  await addBadge(users[5].id, 'eagle_eye');
-  await addBadge(users[0].id, 'first_responder');
-  await addBadge(users[2].id, 'first_responder');
-  await addBadge(users[4].id, 'first_responder');
+  if (userList.length > 0) {
+    const getUid = (idx) => (userList[idx] || userList[0]).id;
+    await addBadge(getUid(3), 'first_responder');
+    await addBadge(getUid(3), 'community_star');
+    await addBadge(getUid(3), 'problem_solver');
+    await addBadge(getUid(7), 'first_responder');
+    await addBadge(getUid(7), 'eagle_eye');
+    await addBadge(getUid(1), 'first_responder');
+    await addBadge(getUid(1), 'community_star');
+    await addBadge(getUid(5), 'first_responder');
+    await addBadge(getUid(5), 'eagle_eye');
+    await addBadge(getUid(0), 'first_responder');
+    await addBadge(getUid(2), 'first_responder');
+    await addBadge(getUid(4), 'first_responder');
+  }
 
-  console.log(`✅ Seeded ${users.length} users and ${delhiIssues.length} issues into MongoDB`);
+  console.log(`✅ Seeded ${delhiIssues.length} issues into MongoDB`);
 }
 
 module.exports = { db, User, Issue, Comment, Verification, UserUpvote, Badge, seedDatabase };
