@@ -94,39 +94,110 @@ async function seedDatabase() {
     return;
   }
 
-  const userCount = await User.countDocuments();
-  if (userCount === 0) {
-    console.log('🌱 Seeding demo users...');
-    const users = [
-      { id: uuidv4(), name: 'Arjun Sharma', email: 'arjun@demo.com', password: 'demo123', points: 185 },
-      { id: uuidv4(), name: 'Priya Patel', email: 'priya@demo.com', password: 'demo123', points: 240 },
-      { id: uuidv4(), name: 'Rahul Verma', email: 'rahul@demo.com', password: 'demo123', points: 155 },
-      { id: uuidv4(), name: 'Sneha Gupta', email: 'sneha@demo.com', password: 'demo123', points: 310 },
-      { id: uuidv4(), name: 'Vikram Singh', email: 'vikram@demo.com', password: 'demo123', points: 120 },
-      { id: uuidv4(), name: 'Ananya Reddy', email: 'ananya@demo.com', password: 'demo123', points: 195 },
-      { id: uuidv4(), name: 'Karan Mehta', email: 'karan@demo.com', password: 'demo123', points: 88 },
-      { id: uuidv4(), name: 'Divya Nair', email: 'divya@demo.com', password: 'demo123', points: 275 },
-    ];
+  // Drop obsolete indexes (like username_1) that conflict with user schema
+  try {
+    const indexes = await User.collection.indexes();
+    for (const idx of indexes) {
+      if (idx.name !== '_id_' && idx.name !== 'id_1' && idx.name !== 'email_1') {
+        console.log(`Dropping obsolete index: ${idx.name}`);
+        await User.collection.dropIndex(idx.name);
+      }
+    }
+  } catch (idxErr) {
+    // Ignore if collection doesn't exist yet or index already dropped
+  }
 
-    for (const u of users) {
+  // 1. Clean up broken legacy users that have no email or password
+  try {
+    await User.deleteMany({
+      $or: [
+        { email: { $exists: false } },
+        { email: null },
+        { email: '' },
+        { password_hash: { $exists: false } },
+        { password_hash: null }
+      ]
+    });
+  } catch (cleanupErr) {
+    console.warn('Legacy user cleanup notice:', cleanupErr.message);
+  }
+
+  // 2. Ensure all 8 demo users exist with proper points and names
+  console.log('🌱 Checking / seeding demo users...');
+  const demoUsers = [
+    { name: 'Sneha Gupta', email: 'sneha@demo.com', password: 'demo123', points: 310 },
+    { name: 'Divya Nair', email: 'divya@demo.com', password: 'demo123', points: 275 },
+    { name: 'Priya Patel', email: 'priya@demo.com', password: 'demo123', points: 240 },
+    { name: 'Ananya Reddy', email: 'ananya@demo.com', password: 'demo123', points: 195 },
+    { name: 'Arjun Sharma', email: 'arjun@demo.com', password: 'demo123', points: 185 },
+    { name: 'Rahul Verma', email: 'rahul@demo.com', password: 'demo123', points: 155 },
+    { name: 'Vikram Singh', email: 'vikram@demo.com', password: 'demo123', points: 120 },
+    { name: 'Karan Mehta', email: 'karan@demo.com', password: 'demo123', points: 88 }
+  ];
+
+  for (const u of demoUsers) {
+    let existing = await User.findOne({ email: u.email });
+    if (!existing) {
       const hash = bcrypt.hashSync(u.password, 10);
       await User.create({
-        id: u.id,
+        id: uuidv4(),
         name: u.name,
         email: u.email,
         password_hash: hash,
         points: u.points
       });
+    } else {
+      let updated = false;
+      if (!existing.id) { existing.id = uuidv4(); updated = true; }
+      if (!existing.name) { existing.name = u.name; updated = true; }
+      if (!existing.points || existing.points === 0) { existing.points = u.points; updated = true; }
+      if (updated) await existing.save();
     }
   }
 
-  const issueCount = await Issue.countDocuments();
-  if (issueCount > 0) return; // Issues already seeded
-
-  console.log('🌱 Seeding database with demo issues...');
+  // Ensure all remaining users have id and numeric points
+  const remainingUsers = await User.find();
+  for (const u of remainingUsers) {
+    let updated = false;
+    if (!u.id) { u.id = uuidv4(); updated = true; }
+    if (typeof u.points !== 'number') { u.points = 0; updated = true; }
+    if (updated) await u.save();
+  }
 
   const allUsers = await User.find();
   const userList = allUsers.length > 0 ? allUsers : [{ id: uuidv4() }];
+
+  // 3. Repair existing issues that lack valid reported_by or belong to non-existent users
+  const activeIds = userList.map(u => u.id);
+  const brokenIssues = await Issue.find({
+    $or: [
+      { reported_by: { $exists: false } },
+      { reported_by: null },
+      { reported_by: 'undefined' },
+      { reported_by: '' },
+      { reported_by: { $nin: activeIds } }
+    ]
+  });
+  if (brokenIssues.length > 0) {
+    console.log(`🔧 Re-attributing ${brokenIssues.length} issues to active demo users...`);
+    for (let i = 0; i < brokenIssues.length; i++) {
+      const reporter = userList[i % userList.length];
+      brokenIssues[i].reported_by = reporter.id;
+      await brokenIssues[i].save();
+    }
+  }
+
+  // Ensure top heroes have resolved issues attributed to them
+  const resolvedIssues = await Issue.find({ status: 'resolved' });
+  for (let i = 0; i < resolvedIssues.length; i++) {
+    resolvedIssues[i].reported_by = userList[i % Math.min(3, userList.length)].id;
+    await resolvedIssues[i].save();
+  }
+
+  // 4. Seed issues if none exist
+  const issueCount = await Issue.countDocuments();
+  if (issueCount === 0) {
+    console.log('🌱 Seeding database with demo issues...');
 
   // Delhi NCR locations for realistic seed data
   const delhiIssues = [
@@ -366,61 +437,79 @@ async function seedDatabase() {
     }
   ];
 
-  for (const issue of delhiIssues) {
-    const reporterId = userList[Math.floor(Math.random() * userList.length)].id;
-    const resolvedAt = issue.status === 'resolved' ? new Date() : null;
-    
-    // Calculate past date
-    const d = new Date();
-    d.setDate(d.getDate() - issue.daysAgo);
+    for (let i = 0; i < delhiIssues.length; i++) {
+      const issue = delhiIssues[i];
+      const reporterId = userList[i % userList.length].id;
+      const resolvedAt = issue.status === 'resolved' ? new Date() : null;
+      
+      // Calculate past date
+      const d = new Date();
+      d.setDate(d.getDate() - issue.daysAgo);
 
-    await Issue.create({
-      id: uuidv4(),
-      title: issue.title,
-      description: issue.description,
-      category: issue.category,
-      severity: issue.severity,
-      status: issue.status,
-      lat: issue.lat,
-      lng: issue.lng,
-      address: issue.address,
-      reported_by: reporterId,
-      upvotes: issue.upvotes,
-      verifications: issue.verifications,
-      created_at: d,
-      updated_at: d,
-      resolved_at: resolvedAt
-    });
-  }
-
-  // Add some badges to top users if users exist
-  const addBadge = async (userId, type) => {
-    try {
-      if (userId) {
-        await Badge.create({ id: uuidv4(), user_id: userId, badge_type: type });
-      }
-    } catch (e) {
-      // Ignore duplicates
+      await Issue.create({
+        id: uuidv4(),
+        title: issue.title,
+        description: issue.description,
+        category: issue.category,
+        severity: issue.severity,
+        status: issue.status,
+        lat: issue.lat,
+        lng: issue.lng,
+        address: issue.address,
+        reported_by: reporterId,
+        upvotes: issue.upvotes,
+        verifications: issue.verifications,
+        created_at: d,
+        updated_at: d,
+        resolved_at: resolvedAt
+      });
     }
-  };
-
-  if (userList.length > 0) {
-    const getUid = (idx) => (userList[idx] || userList[0]).id;
-    await addBadge(getUid(3), 'first_responder');
-    await addBadge(getUid(3), 'community_star');
-    await addBadge(getUid(3), 'problem_solver');
-    await addBadge(getUid(7), 'first_responder');
-    await addBadge(getUid(7), 'eagle_eye');
-    await addBadge(getUid(1), 'first_responder');
-    await addBadge(getUid(1), 'community_star');
-    await addBadge(getUid(5), 'first_responder');
-    await addBadge(getUid(5), 'eagle_eye');
-    await addBadge(getUid(0), 'first_responder');
-    await addBadge(getUid(2), 'first_responder');
-    await addBadge(getUid(4), 'first_responder');
+    console.log(`✅ Seeded ${delhiIssues.length} issues into MongoDB`);
   }
 
-  console.log(`✅ Seeded ${delhiIssues.length} issues into MongoDB`);
+  // 5. Seed sample verifications if none exist
+  const verificationCount = await Verification.countDocuments();
+  if (verificationCount === 0 && userList.length > 0) {
+    const issues = await Issue.find().limit(10);
+    for (let i = 0; i < issues.length; i++) {
+      const issue = issues[i];
+      for (let j = 0; j < Math.min(3, userList.length); j++) {
+        const u = userList[(i + j + 1) % userList.length];
+        try {
+          await Verification.create({
+            id: uuidv4(),
+            issue_id: issue.id,
+            user_id: u.id
+          });
+        } catch (e) {}
+      }
+    }
+  }
+
+  // 6. Seed badges if none exist
+  const badgeCount = await Badge.countDocuments();
+  if (badgeCount === 0 && userList.length > 0) {
+    const addBadge = async (userId, type) => {
+      try {
+        if (userId) {
+          await Badge.create({ id: uuidv4(), user_id: userId, badge_type: type });
+        }
+      } catch (e) {}
+    };
+
+    const getUid = (idx) => (userList[idx % userList.length] || userList[0]).id;
+    await addBadge(getUid(0), 'first_responder');
+    await addBadge(getUid(0), 'community_star');
+    await addBadge(getUid(0), 'problem_solver');
+    await addBadge(getUid(1), 'first_responder');
+    await addBadge(getUid(1), 'eagle_eye');
+    await addBadge(getUid(2), 'first_responder');
+    await addBadge(getUid(2), 'community_star');
+    await addBadge(getUid(3), 'first_responder');
+    await addBadge(getUid(3), 'eagle_eye');
+    await addBadge(getUid(4), 'first_responder');
+    await addBadge(getUid(5), 'first_responder');
+  }
 }
 
 module.exports = { db, User, Issue, Comment, Verification, UserUpvote, Badge, seedDatabase };
