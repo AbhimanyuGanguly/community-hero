@@ -4,6 +4,7 @@
   "description": "Community Hero - Hyperlocal Problem Solver Platform",
   "main": "server/server.js",
   "scripts": {
+    "build": "npm install && cd client && npm install && npm run build && cd ..",
     "start": "node server/server.js",
     "server": "node --watch server/server.js",
     "client": "npm run dev --prefix client",
