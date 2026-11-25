@@ -7,7 +7,7 @@ const router = express.Router();
 // GET /api/users/leaderboard
 router.get('/leaderboard', async (req, res) => {
   try {
-    const users = await User.find({}, 'id name points created_at')
+    const users = await User.find({})
       .sort({ points: -1 })
       .limit(50)
       .lean();
@@ -15,14 +15,18 @@ router.get('/leaderboard', async (req, res) => {
     const result = [];
     for (let i = 0; i < users.length; i++) {
       const user = users[i];
+      const uid = user.id || user._id.toString();
       
-      const issues_reported = await Issue.countDocuments({ reported_by: user.id });
-      const issues_resolved = await Issue.countDocuments({ reported_by: user.id, status: 'resolved' });
-      const verifications_count = await Verification.countDocuments({ user_id: user.id });
-      const badges = await Badge.find({ user_id: user.id }, 'badge_type earned_at -_id').lean();
+      const issues_reported = await Issue.countDocuments({ reported_by: uid });
+      const issues_resolved = await Issue.countDocuments({ reported_by: uid, status: 'resolved' });
+      const verifications_count = await Verification.countDocuments({ user_id: uid });
+      const badges = await Badge.find({ user_id: uid }, 'badge_type earned_at -_id').lean();
 
       result.push({
         ...user,
+        id: uid,
+        name: user.name || 'Community Hero',
+        points: user.points || 0,
         issues_reported,
         issues_resolved,
         verifications_count,

@@ -27,15 +27,16 @@ export default function Leaderboard() {
             {users.slice(0, 3).map((user, i) => {
               const trophies = ['🏆', '🥈', '🥉'];
               const classes = ['first', 'second', 'third'];
+              const displayName = user.name || 'Hero ' + (i + 1);
               return (
-                <div key={user.id} className={`top3-card ${classes[i]}`}>
+                <div key={user.id || user._id || i} className={`top3-card ${classes[i]}`}>
                   <div className="top3-trophy" style={{ fontSize: '28px' }}>{trophies[i]}</div>
-                  <div className="avatar avatar-lg" style={{ background: Utils.getAvatarColor(user.name) }}>
-                    {Utils.getInitials(user.name)}
+                  <div className="avatar avatar-lg" style={{ background: Utils.getAvatarColor(displayName) }}>
+                    {Utils.getInitials(displayName)}
                   </div>
-                  <div className="top3-name">{user.name}</div>
-                  <div className="top3-points">{user.points} points</div>
-                  <div className="top3-issues">{user.issues_reported} reported · {user.issues_resolved} resolved</div>
+                  <div className="top3-name">{displayName}</div>
+                  <div className="top3-points">{user.points || 0} points</div>
+                  <div className="top3-issues">{user.issues_reported || 0} reported · {user.issues_resolved || 0} resolved</div>
                 </div>
               );
             })}
@@ -82,26 +83,31 @@ export default function Leaderboard() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((user, i) => (
-                  <tr key={user.id}>
-                    <td><div className="rank-badge">{i + 1}</div></td>
-                    <td>
-                      <div className="flex items-center gap-3">
-                        <div className="avatar avatar-sm" style={{ background: Utils.getAvatarColor(user.name) }}>
-                          {Utils.getInitials(user.name)}
+                {users.map((user, i) => {
+                  const displayName = user.name || 'Community Member';
+                  return (
+                    <tr key={user.id || user._id || i}>
+                      <td><div className="rank-badge">{i + 1}</div></td>
+                      <td>
+                        <div className="flex items-center gap-3">
+                          <div className="avatar avatar-sm" style={{ background: Utils.getAvatarColor(displayName) }}>
+                            {Utils.getInitials(displayName)}
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 600 }}>{displayName}</div>
+                            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-tertiary)' }}>
+                              {user.created_at ? `Joined ${Utils.formatDate(user.created_at)}` : 'Active Hero'}
+                            </div>
+                          </div>
                         </div>
-                        <div>
-                          <div style={{ fontWeight: 600 }}>{user.name}</div>
-                          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-tertiary)' }}>Joined {Utils.formatDate(user.created_at)}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td><strong style={{ color: 'var(--color-blue)' }}>{user.points}</strong></td>
-                    <td className="hide-mobile">{user.issues_reported}</td>
-                    <td className="hide-mobile">{user.issues_resolved}</td>
-                    <td className="hide-mobile">{user.verifications_count}</td>
-                  </tr>
-                ))}
+                      </td>
+                      <td><strong style={{ color: 'var(--color-blue)' }}>{user.points || 0}</strong></td>
+                      <td className="hide-mobile">{user.issues_reported || 0}</td>
+                      <td className="hide-mobile">{user.issues_resolved || 0}</td>
+                      <td className="hide-mobile">{user.verifications_count || 0}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
