@@ -95,31 +95,38 @@ async function seedDatabase() {
   }
 
   const userCount = await User.countDocuments();
-  if (userCount > 0) return; // Already seeded
+  if (userCount === 0) {
+    console.log('🌱 Seeding demo users...');
+    const users = [
+      { id: uuidv4(), name: 'Arjun Sharma', email: 'arjun@demo.com', password: 'demo123', points: 185 },
+      { id: uuidv4(), name: 'Priya Patel', email: 'priya@demo.com', password: 'demo123', points: 240 },
+      { id: uuidv4(), name: 'Rahul Verma', email: 'rahul@demo.com', password: 'demo123', points: 155 },
+      { id: uuidv4(), name: 'Sneha Gupta', email: 'sneha@demo.com', password: 'demo123', points: 310 },
+      { id: uuidv4(), name: 'Vikram Singh', email: 'vikram@demo.com', password: 'demo123', points: 120 },
+      { id: uuidv4(), name: 'Ananya Reddy', email: 'ananya@demo.com', password: 'demo123', points: 195 },
+      { id: uuidv4(), name: 'Karan Mehta', email: 'karan@demo.com', password: 'demo123', points: 88 },
+      { id: uuidv4(), name: 'Divya Nair', email: 'divya@demo.com', password: 'demo123', points: 275 },
+    ];
 
-  console.log('🌱 Seeding database with demo data...');
-
-  const users = [
-    { id: uuidv4(), name: 'Arjun Sharma', email: 'arjun@demo.com', password: 'demo123', points: 185 },
-    { id: uuidv4(), name: 'Priya Patel', email: 'priya@demo.com', password: 'demo123', points: 240 },
-    { id: uuidv4(), name: 'Rahul Verma', email: 'rahul@demo.com', password: 'demo123', points: 155 },
-    { id: uuidv4(), name: 'Sneha Gupta', email: 'sneha@demo.com', password: 'demo123', points: 310 },
-    { id: uuidv4(), name: 'Vikram Singh', email: 'vikram@demo.com', password: 'demo123', points: 120 },
-    { id: uuidv4(), name: 'Ananya Reddy', email: 'ananya@demo.com', password: 'demo123', points: 195 },
-    { id: uuidv4(), name: 'Karan Mehta', email: 'karan@demo.com', password: 'demo123', points: 88 },
-    { id: uuidv4(), name: 'Divya Nair', email: 'divya@demo.com', password: 'demo123', points: 275 },
-  ];
-
-  for (const u of users) {
-    const hash = bcrypt.hashSync(u.password, 10);
-    await User.create({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      password_hash: hash,
-      points: u.points
-    });
+    for (const u of users) {
+      const hash = bcrypt.hashSync(u.password, 10);
+      await User.create({
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        password_hash: hash,
+        points: u.points
+      });
+    }
   }
+
+  const issueCount = await Issue.countDocuments();
+  if (issueCount > 0) return; // Issues already seeded
+
+  console.log('🌱 Seeding database with demo issues...');
+
+  const allUsers = await User.find();
+  const userList = allUsers.length > 0 ? allUsers : [{ id: uuidv4() }];
 
   // Delhi NCR locations for realistic seed data
   const delhiIssues = [
@@ -360,7 +367,7 @@ async function seedDatabase() {
   ];
 
   for (const issue of delhiIssues) {
-    const reporterId = users[Math.floor(Math.random() * users.length)].id;
+    const reporterId = userList[Math.floor(Math.random() * userList.length)].id;
     const resolvedAt = issue.status === 'resolved' ? new Date() : null;
     
     // Calculate past date
