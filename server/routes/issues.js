@@ -2,9 +2,10 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const path = require('path');
-const { db } = require('../database');
+const fs = require('fs');
+const { Issue, User, Comment, Verification, UserUpvote, Badge } = require('../database');
 const { requireAuth, optionalAuth } = require('../middleware/auth');
-const { analyzeIssue, generatePredictions, generateGrievanceLetter } = require('../gemini');
+const { analyzeIssue, generatePredictions, generateGrievanceLetter, verifyScreenshotWithAI } = require('../gemini');
 
 const router = express.Router();
 
@@ -35,65 +36,58 @@ router.get('/', optionalAuth, async (req, res) => {
   try {
     const { category, status, severity, search, sort, limit, offset, author_id } = req.query;
 
-    let whereClause = 'WHERE 1=1';
-    const params = [];
-    let paramIndex = 1;
+    const query = {};
 
     if (category && category !== 'all') {
-      whereClause += ` AND i.category = $${paramIndex++}`;
-      params.push(category);
+      query.category = category;
     }
     if (status && status !== 'all') {
-      whereClause += ` AND i.status = $${paramIndex++}`;
-      params.push(status);
+      query.status = status;
     }
     if (severity && severity !== 'all') {
-      whereClause += ` AND i.severity = $${paramIndex++}`;
-      params.push(severity);
+      query.severity = severity;
     }
     if (author_id) {
       if (author_id === 'me' && req.user) {
-        whereClause += ` AND i.reported_by = $${paramIndex++}`;
-        params.push(req.user.id);
+        query.reported_by = req.user.id;
       } else if (author_id !== 'me') {
-        whereClause += ` AND i.reported_by = $${paramIndex++}`;
-        params.push(author_id);
+        query.reported_by = author_id;
       }
     }
     if (search) {
-      whereClause += ` AND (i.title ILIKE $${paramIndex} OR i.description ILIKE $${paramIndex+1} OR i.address ILIKE $${paramIndex+2})`;
-      const s = `%${search}%`;
-      params.push(s, s, s);
-      paramIndex += 3;
+      const searchRegex = new RegExp(search, 'i');
+      query.$or = [
+        { title: searchRegex },
+        { description: searchRegex },
+        { address: searchRegex }
+      ];
     }
 
-    let orderClause = 'ORDER BY i.created_at DESC';
-    if (sort === 'upvotes') orderClause = 'ORDER BY i.upvotes DESC';
-    else if (sort === 'severity') orderClause = "ORDER BY CASE i.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END";
-    else if (sort === 'oldest') orderClause = 'ORDER BY i.created_at ASC';
+    let sortObj = { created_at: -1 };
+    if (sort === 'upvotes') sortObj = { upvotes: -1 };
+    else if (sort === 'severity') {
+      sortObj = { severity: 1, created_at: -1 }; 
+    }
+    else if (sort === 'oldest') sortObj = { created_at: 1 };
 
     const limitVal = Math.min(parseInt(limit) || 50, 100);
     const offsetVal = parseInt(offset) || 0;
     
-    const limitClause = ` LIMIT $${paramIndex++} OFFSET $${paramIndex++}`;
-    params.push(limitVal, offsetVal);
+    const issues = await Issue.find(query)
+      .sort(sortObj)
+      .skip(offsetVal)
+      .limit(limitVal)
+      .lean();
 
-    const issuesRes = await db.query(`
-      SELECT i.*, u.name as reporter_name
-      FROM issues i
-      LEFT JOIN users u ON i.reported_by = u.id
-      ${whereClause}
-      ${orderClause}
-      ${limitClause}
-    `, params);
+    // Map reporter_name
+    for (let issue of issues) {
+      const u = await User.findOne({ id: issue.reported_by }).lean();
+      issue.reporter_name = u ? u.name : 'Unknown';
+    }
 
-    // Calculate total without limit offset
-    const totalParams = params.slice(0, -2);
-    const totalRes = await db.query(`
-      SELECT COUNT(*) as count FROM issues i ${whereClause}
-    `, totalParams);
+    const total = await Issue.countDocuments(query);
 
-    res.json({ issues: issuesRes.rows, total: parseInt(totalRes.rows[0].count) });
+    res.json({ issues, total });
   } catch (err) {
     console.error('List issues error:', err);
     res.status(500).json({ error: 'Failed to fetch issues' });
@@ -103,83 +97,84 @@ router.get('/', optionalAuth, async (req, res) => {
 // GET /api/issues/stats - Aggregate stats for dashboard
 router.get('/stats', async (req, res) => {
   try {
-    const totalIssuesRes = await db.query('SELECT COUNT(*) as count FROM issues');
-    const resolvedIssuesRes = await db.query("SELECT COUNT(*) as count FROM issues WHERE status = 'resolved'");
-    const activeMembersRes = await db.query('SELECT COUNT(*) as count FROM users');
-
-    const totalIssues = parseInt(totalIssuesRes.rows[0].count);
-    const resolvedIssues = parseInt(resolvedIssuesRes.rows[0].count);
-    const activeMembers = parseInt(activeMembersRes.rows[0].count);
+    const totalIssues = await Issue.countDocuments();
+    const resolvedIssues = await Issue.countDocuments({ status: 'resolved' });
+    const activeMembers = await User.countDocuments();
 
     // Average resolution time (days)
-    const avgResolutionRes = await db.query(`
-      SELECT AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))/86400.0) as avg_days
-      FROM issues WHERE resolved_at IS NOT NULL
-    `);
+    const avgResData = await Issue.aggregate([
+      { $match: { resolved_at: { $exists: true, $ne: null } } },
+      { $project: { duration: { $subtract: ["$resolved_at", "$created_at"] } } },
+      { $group: { _id: null, avg_ms: { $avg: "$duration" } } }
+    ]);
+    const avgResolutionDays = avgResData.length ? (avgResData[0].avg_ms / (1000 * 60 * 60 * 24)) : 0;
 
     // Issues by category
-    const byCategoryRes = await db.query(`
-      SELECT category, COUNT(*) as count
-      FROM issues GROUP BY category ORDER BY count DESC
-    `);
+    const byCategory = await Issue.aggregate([
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $project: { _id: 0, category: "$_id", count: 1 } }
+    ]);
 
     // Issues by status
-    const byStatusRes = await db.query(`
-      SELECT status, COUNT(*) as count
-      FROM issues GROUP BY status ORDER BY count DESC
-    `);
+    const byStatus = await Issue.aggregate([
+      { $group: { _id: "$status", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $project: { _id: 0, status: "$_id", count: 1 } }
+    ]);
 
     // Issues by severity
-    const bySeverityRes = await db.query(`
-      SELECT severity, COUNT(*) as count
-      FROM issues GROUP BY severity
-    `);
+    const bySeverity = await Issue.aggregate([
+      { $group: { _id: "$severity", count: { $sum: 1 } } },
+      { $project: { _id: 0, severity: "$_id", count: 1 } }
+    ]);
 
     // Trend data (last 30 days)
-    const trendRes = await db.query(`
-      SELECT DATE(created_at) as date, COUNT(*) as count
-      FROM issues
-      WHERE created_at >= NOW() - INTERVAL '30 days'
-      GROUP BY DATE(created_at)
-      ORDER BY date
-    `);
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const trend = await Issue.aggregate([
+      { $match: { created_at: { $gte: thirtyDaysAgo } } },
+      { $group: { 
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$created_at" } },
+          count: { $sum: 1 }
+      }},
+      { $sort: { _id: 1 } },
+      { $project: { _id: 0, date: "$_id", count: 1 } }
+    ]);
 
     // Top areas
-    const topAreasRes = await db.query(`
-      SELECT address, COUNT(*) as count
-      FROM issues
-      WHERE address IS NOT NULL AND address != ''
-      GROUP BY address
-      ORDER BY count DESC
-      LIMIT 8
-    `);
+    const topAreas = await Issue.aggregate([
+      { $match: { address: { $exists: true, $ne: '' } } },
+      { $group: { _id: "$address", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 8 },
+      { $project: { _id: 0, address: "$_id", count: 1 } }
+    ]);
 
     // Recent activity
-    const recentIssuesRes = await db.query(`
-      SELECT i.id, i.title, i.status, i.category, i.created_at, u.name as reporter_name
-      FROM issues i
-      LEFT JOIN users u ON i.reported_by = u.id
-      ORDER BY i.created_at DESC
-      LIMIT 10
-    `);
-
-    // Format all counts as numbers
-    const formatCount = (rows) => rows.map(r => ({ ...r, count: parseInt(r.count) }));
+    const recentIssues = await Issue.find({}, 'id title status category created_at reported_by')
+      .sort({ created_at: -1 })
+      .limit(10)
+      .lean();
+    for (let issue of recentIssues) {
+      const u = await User.findOne({ id: issue.reported_by });
+      issue.reporter_name = u ? u.name : 'Unknown';
+    }
 
     res.json({
       summary: {
         totalIssues,
         resolvedIssues,
         activeMembers,
-        avgResolutionDays: avgResolutionRes.rows[0].avg_days ? Math.round(parseFloat(avgResolutionRes.rows[0].avg_days) * 10) / 10 : 0,
+        avgResolutionDays: Math.round(avgResolutionDays * 10) / 10,
         resolutionRate: totalIssues > 0 ? Math.round((resolvedIssues / totalIssues) * 100) : 0
       },
-      byCategory: formatCount(byCategoryRes.rows),
-      byStatus: formatCount(byStatusRes.rows),
-      bySeverity: formatCount(bySeverityRes.rows),
-      trend: formatCount(trendRes.rows),
-      topAreas: formatCount(topAreasRes.rows),
-      recentActivity: recentIssuesRes.rows
+      byCategory,
+      byStatus,
+      bySeverity,
+      trend,
+      topAreas,
+      recentActivity: recentIssues
     });
   } catch (err) {
     console.error('Stats error:', err);
@@ -190,14 +185,34 @@ router.get('/stats', async (req, res) => {
 // GET /api/issues/predictions - AI predictions
 router.get('/predictions', async (req, res) => {
   try {
-    const statsRes = await db.query(`
-      SELECT category, COUNT(*) as count,
-        SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) as resolved,
-        SUM(CASE WHEN created_at >= NOW() - INTERVAL '7 days' THEN 1 ELSE 0 END) as last_week
-      FROM issues GROUP BY category
-    `);
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    const result = await generatePredictions(statsRes.rows);
+    const statsRows = await Issue.aggregate([
+      {
+        $group: {
+          _id: "$category",
+          count: { $sum: 1 },
+          resolved: {
+            $sum: { $cond: [{ $eq: ["$status", "resolved"] }, 1, 0] }
+          },
+          last_week: {
+            $sum: { $cond: [{ $gte: ["$created_at", sevenDaysAgo] }, 1, 0] }
+          }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          category: "$_id",
+          count: 1,
+          resolved: 1,
+          last_week: 1
+        }
+      }
+    ]);
+
+    const result = await generatePredictions(statsRows);
     res.json(result);
   } catch (err) {
     console.error('Predictions error:', err);
@@ -208,54 +223,45 @@ router.get('/predictions', async (req, res) => {
 // GET /api/issues/:id - Get single issue
 router.get('/:id', optionalAuth, async (req, res) => {
   try {
-    const issueRes = await db.query(`
-      SELECT i.*, u.name as reporter_name
-      FROM issues i
-      LEFT JOIN users u ON i.reported_by = u.id
-      WHERE i.id = $1
-    `, [req.params.id]);
-
-    const issue = issueRes.rows[0];
+    const issue = await Issue.findOne({ id: req.params.id }).lean();
 
     if (!issue) {
       return res.status(404).json({ error: 'Issue not found' });
     }
+    
+    const reporter = await User.findOne({ id: issue.reported_by }).lean();
+    issue.reporter_name = reporter ? reporter.name : 'Unknown';
 
     // Get comments
-    const commentsRes = await db.query(`
-      SELECT c.*, u.name as user_name
-      FROM comments c
-      LEFT JOIN users u ON c.user_id = u.id
-      WHERE c.issue_id = $1
-      ORDER BY c.created_at ASC
-    `, [req.params.id]);
+    const commentsRaw = await Comment.find({ issue_id: req.params.id }).sort({ created_at: 1 }).lean();
+    const comments = [];
+    for (let c of commentsRaw) {
+      const u = await User.findOne({ id: c.user_id }).lean();
+      c.user_name = u ? u.name : 'Unknown';
+      comments.push(c);
+    }
 
     // Get verifiers
-    const verifiersRes = await db.query(`
-      SELECT v.created_at, u.name as user_name
-      FROM verifications v
-      LEFT JOIN users u ON v.user_id = u.id
-      WHERE v.issue_id = $1
-    `, [req.params.id]);
+    const verifiersRaw = await Verification.find({ issue_id: req.params.id }).lean();
+    const verifiers = [];
+    for (let v of verifiersRaw) {
+      const u = await User.findOne({ id: v.user_id }).lean();
+      v.user_name = u ? u.name : 'Unknown';
+      verifiers.push(v);
+    }
 
     // Check if current user upvoted/verified
     let userUpvoted = false;
     let userVerified = false;
     if (req.user) {
-      const upvoteRes = await db.query(
-        'SELECT 1 FROM user_upvotes WHERE issue_id = $1 AND user_id = $2',
-        [req.params.id, req.user.id]
-      );
-      userUpvoted = upvoteRes.rows.length > 0;
+      const upvote = await UserUpvote.findOne({ issue_id: req.params.id, user_id: req.user.id });
+      userUpvoted = !!upvote;
 
-      const verifRes = await db.query(
-        'SELECT 1 FROM verifications WHERE issue_id = $1 AND user_id = $2',
-        [req.params.id, req.user.id]
-      );
-      userVerified = verifRes.rows.length > 0;
+      const verif = await Verification.findOne({ issue_id: req.params.id, user_id: req.user.id });
+      userVerified = !!verif;
     }
 
-    res.json({ ...issue, comments: commentsRes.rows, verifiers: verifiersRes.rows, userUpvoted, userVerified });
+    res.json({ ...issue, comments, verifiers, userUpvoted, userVerified });
   } catch (err) {
     console.error('Get issue error:', err);
     res.status(500).json({ error: 'Failed to fetch issue' });
@@ -284,34 +290,39 @@ router.post('/', requireAuth, upload.single('image'), async (req, res) => {
     const finalCategory = category || aiResult.category;
     const finalSeverity = severity || aiResult.severity;
 
-    await db.query(`
-      INSERT INTO issues (id, title, description, category, severity, status, lat, lng, address, image_url, reported_by, ai_category, ai_confidence)
-      VALUES ($1, $2, $3, $4, $5, 'reported', $6, $7, $8, $9, $10, $11, $12)
-    `, [id, title, description, finalCategory, finalSeverity, parseFloat(lat), parseFloat(lng), address || '', imageUrl, req.user.id, aiResult.category, aiResult.confidence]);
+    const newIssue = await Issue.create({
+      id,
+      title,
+      description,
+      category: finalCategory,
+      severity: finalSeverity,
+      status: 'reported',
+      lat: parseFloat(lat),
+      lng: parseFloat(lng),
+      address: address || '',
+      image_url: imageUrl,
+      reported_by: req.user.id,
+      ai_category: aiResult.category,
+      ai_confidence: aiResult.confidence
+    });
 
     // Award points
-    await db.query('UPDATE users SET points = points + 10 WHERE id = $1', [req.user.id]);
+    await User.updateOne({ id: req.user.id }, { $inc: { points: 10 } });
 
     // Check badge
-    const issueCountRes = await db.query(
-      'SELECT COUNT(*) as count FROM issues WHERE reported_by = $1',
-      [req.user.id]
-    );
+    const issueCount = await Issue.countDocuments({ reported_by: req.user.id });
 
-    if (parseInt(issueCountRes.rows[0].count) === 1) {
-      await db.query(
-        'INSERT INTO badges (id, user_id, badge_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-        [uuidv4(), req.user.id, 'first_responder']
-      );
+    if (issueCount === 1) {
+      try {
+        await Badge.create({ id: uuidv4(), user_id: req.user.id, badge_type: 'first_responder' });
+      } catch (e) { /* ignore */ }
     }
 
-    const newIssueRes = await db.query(`
-      SELECT i.*, u.name as reporter_name
-      FROM issues i LEFT JOIN users u ON i.reported_by = u.id
-      WHERE i.id = $1
-    `, [id]);
+    const reporter = await User.findOne({ id: req.user.id }).lean();
+    const issueObj = newIssue.toObject();
+    issueObj.reporter_name = reporter ? reporter.name : 'Unknown';
 
-    res.status(201).json({ issue: newIssueRes.rows[0], aiSuggestion: aiResult });
+    res.status(201).json({ issue: issueObj, aiSuggestion: aiResult });
   } catch (err) {
     console.error('Create issue error:', err);
     res.status(500).json({ error: 'Failed to create issue' });
@@ -351,39 +362,35 @@ router.patch('/:id/status', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid status' });
     }
 
-    const oldIssueRes = await db.query('SELECT status, reported_by, verifications, gov_filed FROM issues WHERE id = $1', [req.params.id]);
-    const oldIssue = oldIssueRes.rows[0];
-    
+    const oldIssue = await Issue.findOne({ id: req.params.id });
     if (!oldIssue) {
       return res.status(404).json({ error: 'Issue not found' });
     }
 
-    const resolvedAt = status === 'resolved' ? new Date().toISOString() : null;
+    const resolvedAt = status === 'resolved' ? new Date() : null;
 
-    await db.query(`
-      UPDATE issues SET status = $1, updated_at = NOW(), resolved_at = COALESCE($2, resolved_at)
-      WHERE id = $3
-    `, [status, resolvedAt, req.params.id]);
+    oldIssue.status = status;
+    oldIssue.updated_at = new Date();
+    if (resolvedAt && !oldIssue.resolved_at) {
+      oldIssue.resolved_at = resolvedAt;
+    }
+    await oldIssue.save();
 
     if (status === 'resolved' && oldIssue.status !== 'resolved') {
       if (oldIssue.verifications >= 2 || oldIssue.gov_filed === 1) {
-        await db.query('UPDATE users SET points = points + 20 WHERE id = $1', [oldIssue.reported_by]);
+        await User.updateOne({ id: oldIssue.reported_by }, { $inc: { points: 20 } });
 
-        const resolvedCountRes = await db.query(
-          "SELECT COUNT(*) as count FROM issues WHERE reported_by = $1 AND status = 'resolved'",
-          [oldIssue.reported_by]
-        );
-        if (parseInt(resolvedCountRes.rows[0].count) >= 3) {
-          await db.query(
-            'INSERT INTO badges (id, user_id, badge_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-            [uuidv4(), oldIssue.reported_by, 'problem_solver']
-          );
+        const resolvedCount = await Issue.countDocuments({ reported_by: oldIssue.reported_by, status: 'resolved' });
+        if (resolvedCount >= 3) {
+          try {
+            await Badge.create({ id: uuidv4(), user_id: oldIssue.reported_by, badge_type: 'problem_solver' });
+          } catch(e) {}
         }
       }
     }
 
-    const updatedRes = await db.query('SELECT * FROM issues WHERE id = $1', [req.params.id]);
-    res.json(updatedRes.rows[0]);
+    const updatedIssue = await Issue.findOne({ id: req.params.id }).lean();
+    res.json(updatedIssue);
   } catch (err) {
     console.error('Update status error:', err);
     res.status(500).json({ error: 'Failed to update status' });
@@ -393,22 +400,24 @@ router.patch('/:id/status', requireAuth, async (req, res) => {
 // POST /api/issues/:id/upvote - Toggle upvote
 router.post('/:id/upvote', requireAuth, async (req, res) => {
   try {
-    const existingRes = await db.query(
-      'SELECT 1 FROM user_upvotes WHERE issue_id = $1 AND user_id = $2',
-      [req.params.id, req.user.id]
-    );
+    const existing = await UserUpvote.findOne({ issue_id: req.params.id, user_id: req.user.id });
 
-    if (existingRes.rows.length > 0) {
-      await db.query('DELETE FROM user_upvotes WHERE issue_id = $1 AND user_id = $2', [req.params.id, req.user.id]);
-      await db.query('UPDATE issues SET upvotes = GREATEST(0, upvotes - 1) WHERE id = $1', [req.params.id]);
+    if (existing) {
+      await UserUpvote.deleteOne({ issue_id: req.params.id, user_id: req.user.id });
+      await Issue.updateOne({ id: req.params.id }, { $inc: { upvotes: -1 } });
     } else {
-      await db.query('INSERT INTO user_upvotes (issue_id, user_id) VALUES ($1, $2)', [req.params.id, req.user.id]);
-      await db.query('UPDATE issues SET upvotes = upvotes + 1 WHERE id = $1', [req.params.id]);
-      await db.query('UPDATE users SET points = points + 1 WHERE id = $1', [req.user.id]);
+      await UserUpvote.create({ issue_id: req.params.id, user_id: req.user.id });
+      await Issue.updateOne({ id: req.params.id }, { $inc: { upvotes: 1 } });
+      await User.updateOne({ id: req.user.id }, { $inc: { points: 1 } });
     }
 
-    const issueRes = await db.query('SELECT upvotes FROM issues WHERE id = $1', [req.params.id]);
-    res.json({ upvotes: issueRes.rows[0].upvotes, upvoted: existingRes.rows.length === 0 });
+    const issue = await Issue.findOne({ id: req.params.id }, 'upvotes');
+    const upvotes = Math.max(0, issue.upvotes);
+    if (issue.upvotes < 0) {
+      await Issue.updateOne({ id: req.params.id }, { upvotes: 0 });
+    }
+    
+    res.json({ upvotes, upvoted: !existing });
   } catch (err) {
     console.error('Upvote error:', err);
     res.status(500).json({ error: 'Failed to upvote' });
@@ -418,32 +427,25 @@ router.post('/:id/upvote', requireAuth, async (req, res) => {
 // POST /api/issues/:id/verify - Verify issue
 router.post('/:id/verify', requireAuth, async (req, res) => {
   try {
-    const existingRes = await db.query(
-      'SELECT 1 FROM verifications WHERE issue_id = $1 AND user_id = $2',
-      [req.params.id, req.user.id]
-    );
+    const existing = await Verification.findOne({ issue_id: req.params.id, user_id: req.user.id });
 
-    if (existingRes.rows.length > 0) {
+    if (existing) {
       return res.status(409).json({ error: 'You have already verified this issue' });
     }
 
-    await db.query('INSERT INTO verifications (id, issue_id, user_id) VALUES ($1, $2, $3)', [uuidv4(), req.params.id, req.user.id]);
-    await db.query('UPDATE issues SET verifications = verifications + 1 WHERE id = $1', [req.params.id]);
-    await db.query('UPDATE users SET points = points + 5 WHERE id = $1', [req.user.id]);
+    await Verification.create({ id: uuidv4(), issue_id: req.params.id, user_id: req.user.id });
+    await Issue.updateOne({ id: req.params.id }, { $inc: { verifications: 1 } });
+    await User.updateOne({ id: req.user.id }, { $inc: { points: 5 } });
 
-    const verifyCountRes = await db.query(
-      'SELECT COUNT(*) as count FROM verifications WHERE user_id = $1',
-      [req.user.id]
-    );
-    if (parseInt(verifyCountRes.rows[0].count) >= 5) {
-      await db.query(
-        'INSERT INTO badges (id, user_id, badge_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-        [uuidv4(), req.user.id, 'eagle_eye']
-      );
+    const verifyCount = await Verification.countDocuments({ user_id: req.user.id });
+    if (verifyCount >= 5) {
+      try {
+        await Badge.create({ id: uuidv4(), user_id: req.user.id, badge_type: 'eagle_eye' });
+      } catch (e) {}
     }
 
-    const issueRes = await db.query('SELECT verifications FROM issues WHERE id = $1', [req.params.id]);
-    res.json({ verifications: issueRes.rows[0].verifications });
+    const issue = await Issue.findOne({ id: req.params.id }, 'verifications');
+    res.json({ verifications: issue.verifications });
   } catch (err) {
     console.error('Verify error:', err);
     res.status(500).json({ error: 'Failed to verify' });
@@ -459,24 +461,21 @@ router.post('/:id/comments', requireAuth, async (req, res) => {
     }
 
     const id = uuidv4();
-    await db.query('INSERT INTO comments (id, issue_id, user_id, text) VALUES ($1, $2, $3, $4)', [id, req.params.id, req.user.id, text.trim()]);
-    await db.query('UPDATE users SET points = points + 2 WHERE id = $1', [req.user.id]);
+    const comment = await Comment.create({ id, issue_id: req.params.id, user_id: req.user.id, text: text.trim() });
+    
+    await User.updateOne({ id: req.user.id }, { $inc: { points: 2 } });
 
-    const userRes = await db.query('SELECT points FROM users WHERE id = $1', [req.user.id]);
-    if (userRes.rows[0].points >= 50) {
-      await db.query(
-        'INSERT INTO badges (id, user_id, badge_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-        [uuidv4(), req.user.id, 'community_star']
-      );
+    const user = await User.findOne({ id: req.user.id });
+    if (user.points >= 50) {
+      try {
+        await Badge.create({ id: uuidv4(), user_id: req.user.id, badge_type: 'community_star' });
+      } catch(e) {}
     }
 
-    const commentRes = await db.query(`
-      SELECT c.*, u.name as user_name
-      FROM comments c LEFT JOIN users u ON c.user_id = u.id
-      WHERE c.id = $1
-    `, [id]);
+    const commentObj = comment.toObject();
+    commentObj.user_name = user.name;
 
-    res.status(201).json(commentRes.rows[0]);
+    res.status(201).json(commentObj);
   } catch (err) {
     console.error('Comment error:', err);
     res.status(500).json({ error: 'Failed to add comment' });
@@ -486,8 +485,7 @@ router.post('/:id/comments', requireAuth, async (req, res) => {
 // GET /api/issues/:id/gov-draft - Generate AI grievance letter draft
 router.get('/:id/gov-draft', optionalAuth, async (req, res) => {
   try {
-    const issueRes = await db.query('SELECT * FROM issues WHERE id = $1', [req.params.id]);
-    const issue = issueRes.rows[0];
+    const issue = await Issue.findOne({ id: req.params.id });
     if (!issue) {
       return res.status(404).json({ error: 'Issue not found' });
     }
@@ -513,64 +511,72 @@ router.get('/:id/gov-draft', optionalAuth, async (req, res) => {
 });
 
 // POST /api/issues/:id/gov-file - Record filing with government portal
-router.post('/:id/gov-file', requireAuth, async (req, res) => {
+router.post('/:id/gov-file', requireAuth, upload.single('screenshot'), async (req, res) => {
   try {
     const { gov_authority, gov_complaint_id } = req.body;
     if (!gov_authority || !gov_complaint_id || !gov_complaint_id.trim()) {
       return res.status(400).json({ error: 'Government Authority and Complaint ID are required' });
     }
 
-    const issueRes = await db.query('SELECT * FROM issues WHERE id = $1', [req.params.id]);
-    if (issueRes.rows.length === 0) {
+    if (!req.file) {
+      return res.status(400).json({ error: 'Screenshot verification is required' });
+    }
+
+    const issue = await Issue.findOne({ id: req.params.id });
+    if (!issue) {
+      // Clean up the uploaded file if issue not found
+      fs.unlinkSync(req.file.path);
       return res.status(404).json({ error: 'Issue not found' });
     }
 
-    const { verifyGrievance } = require('../rpa');
-    const isVerified = await verifyGrievance(gov_complaint_id.trim());
+    // Read the screenshot file into base64
+    const imageData = fs.readFileSync(req.file.path);
+    const base64Image = imageData.toString('base64');
+    
+    // Clean up the uploaded file immediately to save disk space
+    fs.unlinkSync(req.file.path);
+
+    const isVerified = await verifyScreenshotWithAI(base64Image, gov_complaint_id.trim());
 
     if (!isVerified) {
-      return res.status(400).json({ error: 'AI Verification Failed. The provided Ticket ID could not be found or verified on the official tracking portal.' });
+      return res.status(400).json({ error: 'AI Verification Failed. The screenshot does not verify this Ticket ID.' });
     }
 
-    const govFiledAt = new Date().toISOString();
-    const govFiledBy = req.user.id;
+    const govFiledAt = new Date();
+    
+    issue.gov_filed = 1;
+    issue.gov_authority = gov_authority;
+    issue.gov_complaint_id = gov_complaint_id.trim();
+    issue.gov_filed_at = govFiledAt;
+    issue.gov_filed_by = req.user.id;
+    issue.updated_at = new Date();
+    await issue.save();
 
-    await db.query(`
-      UPDATE issues 
-      SET gov_filed = 1, gov_authority = $1, gov_complaint_id = $2, gov_filed_at = $3, gov_filed_by = $4, updated_at = NOW()
-      WHERE id = $5
-    `, [gov_authority, gov_complaint_id.trim(), govFiledAt, govFiledBy, req.params.id]);
+    await User.updateOne({ id: req.user.id }, { $inc: { points: 15 } });
 
-    await db.query('UPDATE users SET points = points + 15 WHERE id = $1', [req.user.id]);
-
-    const commentId = uuidv4();
     const systemCommentText = `🏛️ Grievance officially filed with **${gov_authority}**.\nGovt Complaint ID/Ticket Ref: \`${gov_complaint_id.trim()}\`.\n\n✅ *Status verified via AI Browser Agent.*`;
     
-    await db.query(`
-      INSERT INTO comments (id, issue_id, user_id, text, created_at)
-      VALUES ($1, $2, $3, $4, $5)
-    `, [commentId, req.params.id, req.user.id, systemCommentText, govFiledAt]);
+    await Comment.create({
+      id: uuidv4(),
+      issue_id: req.params.id,
+      user_id: req.user.id,
+      text: systemCommentText,
+      created_at: govFiledAt
+    });
 
-    const govFilesCountRes = await db.query(
-      'SELECT COUNT(*) as count FROM issues WHERE gov_filed_by = $1',
-      [req.user.id]
-    );
+    const govFilesCount = await Issue.countDocuments({ gov_filed_by: req.user.id });
 
-    if (parseInt(govFilesCountRes.rows[0].count) >= 2) {
-      await db.query(
-        'INSERT INTO badges (id, user_id, badge_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-        [uuidv4(), req.user.id, 'civic_champion']
-      );
+    if (govFilesCount >= 2) {
+      try {
+        await Badge.create({ id: uuidv4(), user_id: req.user.id, badge_type: 'civic_champion' });
+      } catch(e) {}
     }
 
-    const updatedIssueRes = await db.query(`
-      SELECT i.*, u.name as reporter_name
-      FROM issues i
-      LEFT JOIN users u ON i.reported_by = u.id
-      WHERE i.id = $1
-    `, [req.params.id]);
+    const updatedIssue = await Issue.findOne({ id: req.params.id }).lean();
+    const reporter = await User.findOne({ id: updatedIssue.reported_by });
+    updatedIssue.reporter_name = reporter ? reporter.name : 'Unknown';
 
-    res.json(updatedIssueRes.rows[0]);
+    res.json(updatedIssue);
   } catch (err) {
     console.error('Gov file error:', err);
     res.status(500).json({ error: 'Failed to record government filing details' });
@@ -580,8 +586,7 @@ router.post('/:id/gov-file', requireAuth, async (req, res) => {
 // DELETE /api/issues/:id - Delete an issue
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
-    const issueRes = await db.query('SELECT * FROM issues WHERE id = $1', [req.params.id]);
-    const issue = issueRes.rows[0];
+    const issue = await Issue.findOne({ id: req.params.id });
     if (!issue) {
       return res.status(404).json({ error: 'Issue not found' });
     }
@@ -590,10 +595,10 @@ router.delete('/:id', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'You can only delete your own reports' });
     }
 
-    await db.query('DELETE FROM comments WHERE issue_id = $1', [req.params.id]);
-    await db.query('DELETE FROM user_upvotes WHERE issue_id = $1', [req.params.id]);
-    await db.query('DELETE FROM verifications WHERE issue_id = $1', [req.params.id]);
-    await db.query('DELETE FROM issues WHERE id = $1', [req.params.id]);
+    await Comment.deleteMany({ issue_id: req.params.id });
+    await UserUpvote.deleteMany({ issue_id: req.params.id });
+    await Verification.deleteMany({ issue_id: req.params.id });
+    await Issue.deleteOne({ id: req.params.id });
 
     res.json({ success: true });
   } catch (err) {

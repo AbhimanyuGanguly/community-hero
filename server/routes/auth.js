@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
-const { db } = require('../database');
+const { User, Badge, Issue, Verification } = require('../database');
 const { generateToken, requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
@@ -20,28 +20,25 @@ router.post('/signup', async (req, res) => {
     }
 
     // Check if email already exists
-    const existingRes = await db.query('SELECT id FROM users WHERE email = $1', [email]);
-    if (existingRes.rows.length > 0) {
+    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    if (existingUser) {
       return res.status(409).json({ error: 'An account with this email already exists' });
     }
 
     const id = uuidv4();
     const passwordHash = bcrypt.hashSync(password, 10);
 
-    await db.query(
-      'INSERT INTO users (id, name, email, password_hash) VALUES ($1, $2, $3, $4)',
-      [id, name.trim(), email.toLowerCase().trim(), passwordHash]
-    );
+    const user = await User.create({
+      id,
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      password_hash: passwordHash
+    });
 
-    const userRes = await db.query(
-      'SELECT id, name, email, points, created_at FROM users WHERE id = $1',
-      [id]
-    );
-    const user = userRes.rows[0];
+    const userObj = { id: user.id, name: user.name, email: user.email, points: user.points, created_at: user.created_at };
+    const token = generateToken(userObj);
 
-    const token = generateToken(user);
-
-    res.status(201).json({ user, token });
+    res.status(201).json({ user: userObj, token });
   } catch (err) {
     console.error('Signup error:', err);
     res.status(500).json({ error: 'Failed to create account' });
@@ -57,11 +54,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const userRes = await db.query(
-      'SELECT * FROM users WHERE email = $1',
-      [email.toLowerCase().trim()]
-    );
-    const user = userRes.rows[0];
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
@@ -72,10 +65,10 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const { password_hash, ...userWithoutPassword } = user;
-    const token = generateToken(userWithoutPassword);
+    const userObj = { id: user.id, name: user.name, email: user.email, points: user.points, created_at: user.created_at };
+    const token = generateToken(userObj);
 
-    res.json({ user: userWithoutPassword, token });
+    res.json({ user: userObj, token });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Failed to log in' });
@@ -85,48 +78,32 @@ router.post('/login', async (req, res) => {
 // GET /api/auth/me
 router.get('/me', requireAuth, async (req, res) => {
   try {
-    const userRes = await db.query(
-      'SELECT id, name, email, points, created_at FROM users WHERE id = $1',
-      [req.user.id]
-    );
-    const user = userRes.rows[0];
+    const user = await User.findOne({ id: req.user.id }, 'id name email points created_at');
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
     // Get badges
-    const badgesRes = await db.query(
-      'SELECT badge_type, earned_at FROM badges WHERE user_id = $1',
-      [req.user.id]
-    );
+    const badges = await Badge.find({ user_id: req.user.id }, 'badge_type earned_at -_id');
 
     // Get issue counts
-    const statsRes = await db.query(`
-      SELECT
-        COUNT(*) as total_reported,
-        SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) as total_resolved
-      FROM issues WHERE reported_by = $1
-    `, [req.user.id]);
-    
-    let stats = statsRes.rows[0];
-    // Ensure numbers are properly parsed since Postgres might return BigInts for COUNT
-    stats = {
-      total_reported: parseInt(stats.total_reported || 0),
-      total_resolved: parseInt(stats.total_resolved || 0)
-    };
+    const total_reported = await Issue.countDocuments({ reported_by: req.user.id });
+    const total_resolved = await Issue.countDocuments({ reported_by: req.user.id, status: 'resolved' });
 
-    const verificationCountRes = await db.query(
-      'SELECT COUNT(*) as count FROM verifications WHERE user_id = $1',
-      [req.user.id]
-    );
+    const total_verifications = await Verification.countDocuments({ user_id: req.user.id });
 
     res.json({
-      ...user,
-      badges: badgesRes.rows,
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      points: user.points,
+      created_at: user.created_at,
+      badges,
       stats: {
-        ...stats,
-        total_verifications: parseInt(verificationCountRes.rows[0].count || 0)
+        total_reported,
+        total_resolved,
+        total_verifications
       }
     });
   } catch (err) {

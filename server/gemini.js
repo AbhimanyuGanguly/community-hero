@@ -12,7 +12,7 @@ function initGemini() {
   }
   try {
     genAI = new GoogleGenerativeAI(apiKey);
-    model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     console.log('✅ Gemini AI initialized successfully');
     return true;
   } catch (err) {
@@ -303,7 +303,7 @@ async function verifyScreenshotWithAI(base64Image, complaintId) {
   }
 
   try {
-    const visionModel = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const visionModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
     
     const prompt = `You are an automated verification agent. 
 Look at this screenshot of a government public grievance tracking portal.

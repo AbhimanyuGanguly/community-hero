@@ -1,10 +1,7 @@
 // ============================================
-// Community Hero — API Client
+// Community Hero — React API Client
 // ============================================
 
-// Dynamically determine the backend API URL
-// If running on localhost, use relative paths to the local Node server.
-// If running on Firebase Hosting (production), route to the Render backend.
 const API_BASE_URL = '/api';
 
 const API = {
@@ -15,7 +12,7 @@ const API = {
     if (!isFormData) {
       headers['Content-Type'] = 'application/json';
     }
-    const token = Auth.getToken();
+    const token = localStorage.getItem('ch_token');
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
@@ -49,7 +46,7 @@ const API = {
     }
   },
 
-  // ---- Auth ----
+  // Auth
   async signup(name, email, password) {
     return this._request('POST', '/auth/signup', { name, email, password });
   },
@@ -62,7 +59,7 @@ const API = {
     return this._request('GET', '/auth/me');
   },
 
-  // ---- Issues ----
+  // Issues
   async getIssues(params = {}) {
     const query = new URLSearchParams(params).toString();
     return this._request('GET', `/issues${query ? '?' + query : ''}`);
@@ -101,15 +98,15 @@ const API = {
     return this._request('GET', `/issues/${id}/gov-draft${qs}`);
   },
 
-  async fileGovGrievance(id, authority, complaintId) {
-    return this._request('POST', `/issues/${id}/gov-file`, { gov_authority: authority, gov_complaint_id: complaintId });
+  async fileGovGrievance(id, formData) {
+    return this._request('POST', `/issues/${id}/gov-file`, formData, true);
   },
 
   async deleteIssue(id) {
     return this._request('DELETE', `/issues/${id}`);
   },
 
-  // ---- Stats ----
+  // Stats & Predictions
   async getStats() {
     return this._request('GET', '/issues/stats');
   },
@@ -118,7 +115,7 @@ const API = {
     return this._request('GET', '/issues/predictions');
   },
 
-  // ---- Users ----
+  // Leaderboard
   async getLeaderboard() {
     return this._request('GET', '/users/leaderboard');
   },
@@ -128,4 +125,4 @@ const API = {
   }
 };
 
-window.API = API;
+export default API;

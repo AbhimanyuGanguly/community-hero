@@ -1,0 +1,191 @@
+/* ============================================
+   Community Hero — Design System Tokens
+   Clerk.com-inspired design system
+   ============================================ */
+
+:root {
+  /* ---- Backgrounds ---- */
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #f4f4f5;
+  --color-bg-card: #ffffff;
+  --color-bg-card-hover: #fafafa;
+  --color-bg-input: #ffffff;
+  --color-bg-input-focus: #ffffff;
+  --color-bg-hero: #ffffff;
+
+  /* ---- Text ---- */
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #64748b;
+  --color-text-tertiary: #94a3b8;
+  --color-text-muted: #cbd5e1;
+  --color-text-inverse: #ffffff;
+
+  /* ---- Primary (Clerk Purple) ---- */
+  --color-blue: #6c47ff;
+  --color-blue-light: #8b6fff;
+  --color-blue-lighter: #ede9fe;
+  --color-blue-dark: #5b3de8;
+  --color-blue-glow: rgba(108, 71, 255, 0.08);
+  --color-blue-bg: #f5f3ff;
+
+  /* ---- Semantic Colors ---- */
+  --color-emerald: #10b981;
+  --color-emerald-light: #6ee7b7;
+  --color-emerald-lighter: #d1fae5;
+  --color-emerald-dark: #059669;
+  --color-emerald-glow: rgba(16, 185, 129, 0.12);
+  --color-emerald-bg: #ecfdf5;
+
+  --color-amber: #f59e0b;
+  --color-amber-light: #fcd34d;
+  --color-amber-lighter: #fef3c7;
+  --color-amber-dark: #d97706;
+  --color-amber-glow: rgba(245, 158, 11, 0.12);
+  --color-amber-bg: #fffbeb;
+
+  --color-rose: #ef4444;
+  --color-rose-light: #fca5a5;
+  --color-rose-lighter: #fee2e2;
+  --color-rose-dark: #dc2626;
+  --color-rose-glow: rgba(239, 68, 68, 0.12);
+  --color-rose-bg: #fef2f2;
+
+  --color-purple: #8b5cf6;
+  --color-purple-light: #c4b5fd;
+  --color-purple-lighter: #ede9fe;
+  --color-purple-dark: #7c3aed;
+  --color-purple-glow: rgba(139, 92, 246, 0.12);
+  --color-purple-bg: #f5f3ff;
+
+  --color-cyan: #06b6d4;
+  --color-cyan-light: #67e8f9;
+  --color-cyan-lighter: #cffafe;
+
+  --color-pink: #ec4899;
+  --color-orange: #f97316;
+  --color-orange-lighter: #ffedd5;
+
+  /* ---- Semantic Mapping ---- */
+  --color-success: var(--color-emerald);
+  --color-warning: var(--color-amber);
+  --color-danger: var(--color-rose);
+  --color-info: var(--color-blue);
+
+  /* ---- Status ---- */
+  --status-reported: var(--color-amber);
+  --status-reported-bg: var(--color-amber-bg);
+  --status-verified: var(--color-blue);
+  --status-verified-bg: var(--color-blue-bg);
+  --status-in-progress: var(--color-purple);
+  --status-in-progress-bg: var(--color-purple-bg);
+  --status-resolved: var(--color-emerald);
+  --status-resolved-bg: var(--color-emerald-bg);
+
+  /* ---- Category ---- */
+  --cat-pothole: #f97316;
+  --cat-pothole-bg: #fff7ed;
+  --cat-water: #06b6d4;
+  --cat-water-bg: #ecfeff;
+  --cat-streetlight: #eab308;
+  --cat-streetlight-bg: #fefce8;
+  --cat-waste: #22c55e;
+  --cat-waste-bg: #f0fdf4;
+  --cat-road: #ef4444;
+  --cat-road-bg: #fef2f2;
+  --cat-infrastructure: #8b5cf6;
+  --cat-infrastructure-bg: #f5f3ff;
+  --cat-other: #64748b;
+  --cat-other-bg: #f8fafc;
+
+  /* ---- Borders ---- */
+  --color-border: #e2e8f0;
+  --color-border-light: #f1f5f9;
+  --color-border-focus: var(--color-blue);
+
+  /* ---- Typography ---- */
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
+  --text-4xl: 2.25rem;
+  --text-5xl: 3rem;
+  --text-6xl: 3.75rem;
+
+  --font-light: 300;
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
+  --font-extrabold: 800;
+
+  --leading-tight: 1.1;
+  --leading-snug: 1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+
+  --tracking-tight: -0.025em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.025em;
+
+  /* ---- Spacing ---- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --space-24: 6rem;
+
+  /* ---- Border Radius (Clerk uses tighter radii) ---- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  /* ---- Shadows (Clean, subtle) ---- */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --shadow-card-hover: 0 8px 24px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.06);
+
+  /* ---- Transitions ---- */
+  --transition-fast: 150ms ease;
+  --transition-base: 250ms ease;
+  --transition-slow: 400ms ease;
+
+  /* ---- Z-Index ---- */
+  --z-base: 1;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-navbar: 500;
+  --z-modal-backdrop: 900;
+  --z-modal: 1000;
+  --z-toast: 1100;
+  --z-tooltip: 1200;
+
+  /* ---- Layout ---- */
+  --navbar-height: 60px;
+  --sidebar-width: 300px;
+  --max-width: 1200px;
+  --max-width-sm: 640px;
+  --max-width-md: 768px;
+  --max-width-lg: 1024px;
+}

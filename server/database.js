@@ -1,102 +1,101 @@
-const { Pool } = require('pg');
+const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('localhost') ? false : {
-    rejectUnauthorized: false
-  }
+// Define schemas
+const userSchema = new mongoose.Schema({
+  id: { type: String, default: uuidv4, unique: true },
+  name: { type: String, required: true },
+  email: { type: String, required: true, unique: true },
+  password_hash: { type: String, required: true },
+  points: { type: Number, default: 0 },
+  created_at: { type: Date, default: Date.now }
 });
 
-// For easier refactoring, we create an async wrapper that exposes query()
-const db = {
-  query: async (text, params) => {
-    return pool.query(text, params);
-  }
-};
+const issueSchema = new mongoose.Schema({
+  id: { type: String, default: uuidv4, unique: true },
+  title: { type: String, required: true },
+  description: { type: String, required: true },
+  category: { type: String, required: true },
+  severity: { type: String, default: 'medium' },
+  status: { type: String, default: 'reported' },
+  lat: { type: Number, required: true },
+  lng: { type: Number, required: true },
+  address: { type: String },
+  image_url: { type: String },
+  reported_by: { type: String },
+  ai_category: { type: String },
+  ai_confidence: { type: Number },
+  upvotes: { type: Number, default: 0 },
+  verifications: { type: Number, default: 0 },
+  gov_filed: { type: Number, default: 0 },
+  gov_authority: { type: String },
+  gov_complaint_id: { type: String },
+  gov_filed_at: { type: Date },
+  gov_filed_by: { type: String },
+  created_at: { type: Date, default: Date.now },
+  updated_at: { type: Date, default: Date.now },
+  resolved_at: { type: Date }
+});
 
-async function initSchema() {
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      points INTEGER DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+const commentSchema = new mongoose.Schema({
+  id: { type: String, default: uuidv4, unique: true },
+  issue_id: { type: String },
+  user_id: { type: String },
+  text: { type: String, required: true },
+  created_at: { type: Date, default: Date.now }
+});
 
-    CREATE TABLE IF NOT EXISTS issues (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      description TEXT NOT NULL,
-      category TEXT NOT NULL,
-      severity TEXT DEFAULT 'medium',
-      status TEXT DEFAULT 'reported',
-      lat REAL NOT NULL,
-      lng REAL NOT NULL,
-      address TEXT,
-      image_url TEXT,
-      reported_by TEXT NOT NULL REFERENCES users(id),
-      ai_category TEXT,
-      ai_confidence REAL,
-      upvotes INTEGER DEFAULT 0,
-      verifications INTEGER DEFAULT 0,
-      gov_filed INTEGER DEFAULT 0,
-      gov_authority TEXT,
-      gov_complaint_id TEXT,
-      gov_filed_at TIMESTAMP,
-      gov_filed_by TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      resolved_at TIMESTAMP
-    );
+const verificationSchema = new mongoose.Schema({
+  id: { type: String, default: uuidv4, unique: true },
+  issue_id: { type: String },
+  user_id: { type: String },
+  created_at: { type: Date, default: Date.now }
+});
+verificationSchema.index({ issue_id: 1, user_id: 1 }, { unique: true });
 
-    CREATE TABLE IF NOT EXISTS comments (
-      id TEXT PRIMARY KEY,
-      issue_id TEXT NOT NULL REFERENCES issues(id),
-      user_id TEXT NOT NULL REFERENCES users(id),
-      text TEXT NOT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
+const userUpvoteSchema = new mongoose.Schema({
+  issue_id: { type: String },
+  user_id: { type: String },
+  created_at: { type: Date, default: Date.now }
+});
+userUpvoteSchema.index({ issue_id: 1, user_id: 1 }, { unique: true });
 
-    CREATE TABLE IF NOT EXISTS verifications (
-      id TEXT PRIMARY KEY,
-      issue_id TEXT NOT NULL REFERENCES issues(id),
-      user_id TEXT NOT NULL REFERENCES users(id),
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(issue_id, user_id)
-    );
+const badgeSchema = new mongoose.Schema({
+  id: { type: String, default: uuidv4, unique: true },
+  user_id: { type: String },
+  badge_type: { type: String, required: true },
+  earned_at: { type: Date, default: Date.now }
+});
+badgeSchema.index({ user_id: 1, badge_type: 1 }, { unique: true });
 
-    CREATE TABLE IF NOT EXISTS user_upvotes (
-      issue_id TEXT NOT NULL REFERENCES issues(id),
-      user_id TEXT NOT NULL REFERENCES users(id),
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (issue_id, user_id)
-    );
+// Export Models
+const User = mongoose.model('User', userSchema);
+const Issue = mongoose.model('Issue', issueSchema);
+const Comment = mongoose.model('Comment', commentSchema);
+const Verification = mongoose.model('Verification', verificationSchema);
+const UserUpvote = mongoose.model('UserUpvote', userUpvoteSchema);
+const Badge = mongoose.model('Badge', badgeSchema);
 
-    CREATE TABLE IF NOT EXISTS badges (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL REFERENCES users(id),
-      badge_type TEXT NOT NULL,
-      earned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(user_id, badge_type)
-    );
-  `);
-}
+// Fake db object so we don't crash files while transitioning
+const db = {}; 
 
 async function seedDatabase() {
-  // If no DATABASE_URL is provided, we can't connect, so skip gracefully
   if (!process.env.DATABASE_URL) {
     console.warn('⚠️ No DATABASE_URL provided. Skipping database initialization.');
     return;
   }
 
-  await initSchema();
+  try {
+    await mongoose.connect(process.env.DATABASE_URL);
+    console.log('✅ Connected to MongoDB');
+  } catch (err) {
+    console.error('Failed to connect to MongoDB:', err);
+    return;
+  }
 
-  const userCountRes = await db.query('SELECT COUNT(*) as count FROM users');
-  if (parseInt(userCountRes.rows[0].count) > 0) return; // Already seeded
+  const userCount = await User.countDocuments();
+  if (userCount > 0) return; // Already seeded
 
   console.log('🌱 Seeding database with demo data...');
 
@@ -113,10 +112,13 @@ async function seedDatabase() {
 
   for (const u of users) {
     const hash = bcrypt.hashSync(u.password, 10);
-    await db.query(
-      'INSERT INTO users (id, name, email, password_hash, points) VALUES ($1, $2, $3, $4, $5)',
-      [u.id, u.name, u.email, hash, u.points]
-    );
+    await User.create({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      password_hash: hash,
+      points: u.points
+    });
   }
 
   // Delhi NCR locations for realistic seed data
@@ -357,28 +359,40 @@ async function seedDatabase() {
     }
   ];
 
-  await pool.query('BEGIN');
-  try {
-    for (const issue of delhiIssues) {
-      const reporterId = users[Math.floor(Math.random() * users.length)].id;
-      const resolvedAt = issue.status === 'resolved' ? new Date().toISOString() : null;
+  for (const issue of delhiIssues) {
+    const reporterId = users[Math.floor(Math.random() * users.length)].id;
+    const resolvedAt = issue.status === 'resolved' ? new Date() : null;
+    
+    // Calculate past date
+    const d = new Date();
+    d.setDate(d.getDate() - issue.daysAgo);
 
-      await db.query(`
-        INSERT INTO issues (id, title, description, category, severity, status, lat, lng, address, reported_by, upvotes, verifications, created_at, updated_at, resolved_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW() - INTERVAL '${issue.daysAgo} days', NOW() - INTERVAL '${issue.daysAgo} days', $13)
-      `, [
-        uuidv4(), issue.title, issue.description, issue.category, issue.severity, issue.status, issue.lat, issue.lng, issue.address, reporterId, issue.upvotes, issue.verifications, resolvedAt
-      ]);
-    }
-    await pool.query('COMMIT');
-  } catch (err) {
-    await pool.query('ROLLBACK');
-    console.error('Failed to seed issues:', err);
+    await Issue.create({
+      id: uuidv4(),
+      title: issue.title,
+      description: issue.description,
+      category: issue.category,
+      severity: issue.severity,
+      status: issue.status,
+      lat: issue.lat,
+      lng: issue.lng,
+      address: issue.address,
+      reported_by: reporterId,
+      upvotes: issue.upvotes,
+      verifications: issue.verifications,
+      created_at: d,
+      updated_at: d,
+      resolved_at: resolvedAt
+    });
   }
 
   // Add some badges to top users
   const addBadge = async (userId, type) => {
-    await db.query('INSERT INTO badges (id, user_id, badge_type) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [uuidv4(), userId, type]);
+    try {
+      await Badge.create({ id: uuidv4(), user_id: userId, badge_type: type });
+    } catch (e) {
+      // Ignore duplicates
+    }
   };
 
   await addBadge(users[3].id, 'first_responder');
@@ -394,7 +408,7 @@ async function seedDatabase() {
   await addBadge(users[2].id, 'first_responder');
   await addBadge(users[4].id, 'first_responder');
 
-  console.log(`✅ Seeded ${users.length} users and ${delhiIssues.length} issues into PostgreSQL`);
+  console.log(`✅ Seeded ${users.length} users and ${delhiIssues.length} issues into MongoDB`);
 }
 
-module.exports = { db, pool, seedDatabase };
+module.exports = { db, User, Issue, Comment, Verification, UserUpvote, Badge, seedDatabase };
