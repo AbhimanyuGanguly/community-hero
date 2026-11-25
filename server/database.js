@@ -87,10 +87,13 @@ async function seedDatabase() {
   }
 
   try {
-    await mongoose.connect(process.env.DATABASE_URL);
+    await mongoose.connect(process.env.DATABASE_URL, {
+      serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of hanging
+      connectTimeoutMS: 10000,
+    });
     console.log('✅ Connected to MongoDB');
   } catch (err) {
-    console.error('Failed to connect to MongoDB:', err);
+    console.error('❌ Failed to connect to MongoDB:', err.message);
     return;
   }
 
